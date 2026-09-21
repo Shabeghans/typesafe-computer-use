@@ -20,11 +20,15 @@ classifiers = [
 ]
 dependencies = [
     "anthropic==1.6.0",
+    "msgspec==0.21.1",
     "ocrmac==1.0.1",
     "pyobjc-framework-ApplicationServices==12.2.2",
     "pyobjc-framework-Quartz==12.2.2",
     "typesafe-sdk==0.6.0",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1", "ruff==0.16.8"]
 
 [project.urls]
 Homepage = "https://github.com/awlevin/typesafe-computer-use"
@@ -33,9 +37,6 @@ Issues = "https://github.com/awlevin/typesafe-computer-use/issues"
 [project.scripts]
 clicker = "typesafe_computer_use.cli:main"
 clicker-inspect = "typesafe_computer_use.cli:inspect"
-
-[dependency-groups]
-dev = ["pytest==9.1.1", "ruff==0.16.8"]
 
 [build-system]
 requires = ["hatchling==1.32.1"]

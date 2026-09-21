@@ -48,23 +48,27 @@ reasoning the frontier model does for free has to be rebuilt here as determinist
 
 ## Install
 
-macOS 14 or newer, Python 3.12 or newer, [uv](https://docs.astral.sh/uv/).
+macOS 14 or newer, Python 3.12 or newer.
 
 ```
 git clone https://github.com/awlevin/typesafe-computer-use
 cd typesafe-computer-use
-uv sync
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt -e .
 cp .env.example .env     # fill in the keys
 ```
 
 | variable | required | purpose |
 |---|---|---|
-| `TYPESAFE_API_KEY` | yes | every decision |
-| `ANTHROPIC_API_KEY` | no | `type_text`, writer-proposed URLs, and the final answer |
+| `OPENROUTER_API_KEY` | yes | every decision, via [OpenRouter's TypeSafe endpoint](https://openrouter.ai/typesafe/jev-1.13), plus the Claude writer: `type_text`, writer-proposed URLs, and the final answer |
+| `TYPESAFE_API_KEY` | no | calls TypeSafe directly instead; used only when `OPENROUTER_API_KEY` is unset |
+| `TYPESAFE_DEFAULT_MODEL` | no | defaults to `jev-latest`; set `jev-1.13` to pin a version |
+| `ANTHROPIC_API_KEY` | no | calls Claude directly instead; used only when `OPENROUTER_API_KEY` is unset |
 | `CLICKER_EMAIL` | no | enables the `type_email` action |
-| `CLICKER_BROWSER` | no | defaults to `Google Chrome` |
-| `CLICKER_WRITER_MODEL` | no | defaults to `claude-haiku-4-5` |
-| `CLICKER_ANSWER_MODEL` | no | reads the last screen for the final answer; defaults to `claude-sonnet-5` |
+| `CLICKER_BROWSER` | no | defaults to `Comet`; any browser with Chrome's AppleScript suite works, such as `Google Chrome` |
+| `CLICKER_WRITER_MODEL` | no | defaults to `claude-haiku-4-5` (`anthropic/claude-haiku-4.5` on OpenRouter) |
+| `CLICKER_ANSWER_MODEL` | no | reads the last screen for the final answer; defaults to `claude-sonnet-5` (`anthropic/claude-sonnet-5` on OpenRouter) |
 
 Grant your terminal **Screen Recording** and **Accessibility** in System Settings >
 Privacy & Security. Without the first, captures are wallpaper. Without the second,
@@ -72,11 +76,13 @@ synthetic clicks are silently dropped, and `--act` refuses to start.
 
 ## Use
 
+Activate the venv first (`source venv/bin/activate`).
+
 ```
-uv run clicker "open the Playground"                 # dry run: one step, prints what it would do
-uv run clicker "open the Playground" --act           # drives the machine, up to 100 steps
-uv run clicker "log in" --act --steps 20 --delay 3   # longer and slower
-uv run clicker-inspect "any goal"                    # 3-2-1, capture, open the annotated screen + payload
+clicker "open the Playground"                 # dry run: one step, prints what it would do
+clicker "open the Playground" --act           # drives the machine, up to 100 steps
+clicker "log in" --act --steps 20 --delay 3   # longer and slower
+clicker-inspect "any goal"                    # 3-2-1, capture, open the annotated screen + payload
 ```
 
 Clear the terminal first. It is on screen, so its text is OCR input.
@@ -241,6 +247,7 @@ Every run writes `runs/<timestamp>/` so a stall can be replayed and fixed offlin
 | `step-NNN-raw.png` | the capture |
 | `step-NNN.png` | items numbered in blue, accessibility ones orange, the chosen one red, the focused field green |
 | `step-NNN-payload.txt` | the exact `state` and criteria sent to TypeSafe, then every item with source, role, box, click point, confidence, then the off-screen controls |
+| `calls.log` | every model call in order, headed by its number, step, service and seconds: for Jev the state sent, each question with its choices, and every answer with its probabilities; for Claude the full request (the screenshot shown as its size, not its bytes) and the reply with its token usage. Failed calls are logged too |
 | `step-NNN-answers.json` | every probability the classifier returned, the off-screen controls it was offered, plus `timing` for that step |
 
 Each step also logs what it cost, so a slow phase is obvious:
@@ -254,7 +261,7 @@ Each step also logs what it cost, so a slow phase is obvious:
 Replay a saved capture as if it were live, without touching the screen:
 
 ```
-uv run clicker "same goal" --image runs/<ts>/step-003-raw.png --app "Google Chrome" --url "https://example.com/"
+clicker "same goal" --image runs/<ts>/step-003-raw.png --app "Comet" --url "https://example.com/"
 ```
 
 ## Layout
@@ -294,8 +301,9 @@ as callables, so only those three bindings change. Nothing else knows the platfo
 ## Development
 
 ```
-uv run ruff check . && uv run ruff format --check .
-uv run pytest -q
+pip install -r requirements.txt -e ".[dev]"
+ruff check . && ruff format --check .
+pytest -q
 ```
 
 CI runs the same on macOS. See [CONTRIBUTING.md](CONTRIBUTING.md).

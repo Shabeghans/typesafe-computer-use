@@ -22,8 +22,8 @@ DOTENV = Path.cwd() / ".env"
 
 def _prepare() -> None:
     config.load_dotenv(DOTENV)
-    if not os.environ.get("TYPESAFE_API_KEY"):
-        sys.exit("TYPESAFE_API_KEY is not set (export it or put it in .env)")
+    if not (os.environ.get("OPENROUTER_API_KEY") or os.environ.get("TYPESAFE_API_KEY")):
+        sys.exit("OPENROUTER_API_KEY is not set (export it or put it in .env)")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -47,7 +47,9 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit("this terminal lacks Accessibility permission; grant it in System Settings > Privacy & Security")
     writer = make_writer()
     if writer is None:
-        print("writer disabled: no ANTHROPIC_API_KEY; type_text, writer-proposed URLs and the final answer need it")
+        print(
+            "writer disabled: no OPENROUTER_API_KEY or ANTHROPIC_API_KEY; type_text, writer-proposed URLs and the final answer need it"
+        )
 
     cfg = RunConfig(
         goal=args.goal,

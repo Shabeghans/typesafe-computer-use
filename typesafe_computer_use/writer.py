@@ -11,15 +11,15 @@ from urllib.parse import urlparse
 import anthropic
 from PIL import Image
 
-from .config import answer_model, writer_model
+from .config import answer_model, writer_client, writer_model
 from .dates import now_context
 from .models import Item, Screen
 from .perception import near_field
 
 
 def make_writer() -> anthropic.Anthropic | None:
-    """A client, or None when no Anthropic credentials resolve (the SDK only checks on first request)."""
-    client = anthropic.Anthropic()
+    """A client, or None when no credentials resolve (the SDK only checks on first request)."""
+    client = anthropic.Anthropic(**writer_client())
     if client.api_key or getattr(client, "auth_token", None):
         return client
     return None

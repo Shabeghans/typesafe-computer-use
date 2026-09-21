@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import anthropic
@@ -12,7 +12,8 @@ from typesafe_sdk import TypeSafeClient
 
 from . import macos
 from .actions import Context, is_noop, perform
-from .config import DEFAULT_DELAY, DEFAULT_MIN_CONFIDENCE, DEFAULT_STEPS, MAX_OPTIONS
+from .calls import CallLog, LoggedAnthropic, LoggedTypeSafe
+from .config import DEFAULT_DELAY, DEFAULT_MIN_CONFIDENCE, DEFAULT_STEPS, MAX_OPTIONS, decision_client
 from .decide import Decision, decide, offscreen_records
 from .models import Abort, Item, Screen
 from .perception import OcrCache, capture, perceive
@@ -60,6 +61,7 @@ class RunState:
     ocr_cache: OcrCache = field(default_factory=OcrCache)  # carries one step's OCR into the next
     view: tuple[Screen, list[Item]] | None = None  # the latest capture, until an action makes it stale
     answer: Answer | None = None
+    calls: CallLog | None = None  # every model call, written to calls.log in the run folder
 
 
 def run(cfg: RunConfig, ctx_factory) -> RunState:
@@ -70,11 +72,13 @@ def run(cfg: RunConfig, ctx_factory) -> RunState:
     if cfg.act:
         log("driving the machine. abort: Ctrl-C, or slam the mouse into the top-left corner.")
 
-    state = RunState()
+    state = RunState(calls=CallLog(cfg.out / "calls.log"))
     started = time.time()
     try:
-        with TypeSafeClient() as typesafe:
-            ctx = ctx_factory(typesafe, state.history)
+        with TypeSafeClient(**decision_client()) as typesafe:
+            ctx = ctx_factory(LoggedTypeSafe(typesafe, state.calls), state.history)
+            if ctx.writer is not None:
+                ctx = replace(ctx, writer=LoggedAnthropic(ctx.writer, state.calls))
             for step in range(1, cfg.steps + 1):
                 if not run_step(cfg, ctx, state, step, log):
                     break
@@ -99,6 +103,7 @@ def run(cfg: RunConfig, ctx_factory) -> RunState:
             "config": {k: str(v) for k, v in asdict(cfg).items()},
         }
         (cfg.out / "run.json").write_text(json.dumps(summary, indent=2))
+        log(f"model calls: {state.calls.count}, logged in {state.calls.path}")
         log(f"run folder: {cfg.out}")
     return state
 
@@ -113,9 +118,11 @@ def conclude(cfg: RunConfig, ctx: Context, state: RunState, log: Log) -> None:
     if stopped is None:
         return
     if ctx.writer is None:
-        log("\nno answer: the writer is disabled (set ANTHROPIC_API_KEY)")
+        log("\nno answer: the writer is disabled (set OPENROUTER_API_KEY or ANTHROPIC_API_KEY)")
         return
     started = time.perf_counter()
+    if state.calls is not None:
+        state.calls.step = "answer"
     if state.view is None:
         macos.check_abort()
         screen = capture(cfg.image, cfg.app, cfg.url, ctx.browser)
@@ -133,6 +140,8 @@ def conclude(cfg: RunConfig, ctx: Context, state: RunState, log: Log) -> None:
 
 def run_step(cfg: RunConfig, ctx: Context, state: RunState, step: int, log: Log) -> bool:
     macos.check_abort()
+    if state.calls is not None:
+        state.calls.step = str(step)
     timing: dict[str, float] = {}
     started = time.perf_counter()
     with phase(timing, "capture"):

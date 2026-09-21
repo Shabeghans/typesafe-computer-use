@@ -19,8 +19,9 @@ so a stall can be replayed offline with `--image`.
 ## Before a pull request
 
 ```
-uv run ruff check . && uv run ruff format .
-uv run pytest -q
+pip install -r requirements.txt -e ".[dev]"   # once, inside the venv
+ruff check . && ruff format .
+pytest -q
 ```
 
 Add a replay-based note to the PR when a change alters what the model sees:
