@@ -1,4 +1,4 @@
-"""Command-line entry points: `clicker` and `clicker-inspect`."""
+"""Command-line entry points: `clicker`, `clicker-inspect` and `clicker-voice`."""
 
 from __future__ import annotations
 
@@ -10,7 +10,10 @@ import time
 from pathlib import Path
 
 from . import config, macos
+from . import voice as voice_mode
 from .actions import Context
+from .apple_speech import AppleEars, EarsError
+from .hotkey import DEFAULT_KEY, KEYS, HoldKey
 from .perception import capture, perceive
 from .report import annotate, ax_count, render_payload
 from .runner import RunConfig, run
@@ -18,6 +21,7 @@ from .timing import format_timing
 from .writer import make_writer
 
 DOTENV = Path.cwd() / ".env"
+CLEAR_LINE = "\r\033[K"
 
 
 def _prepare() -> None:
@@ -120,44 +124,39 @@ def inspect(argv: list[str] | None = None) -> None:
 def voice(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="clicker-voice",
-        description="Listen to the microphone and act on each spoken request as soon as it is complete.",
+        description="Push to talk: hold a key, speak a request, let go, and it is done.",
     )
     parser.add_argument("--act", action="store_true", help="actually click and type (default: one dry-run step per request)")
+    parser.add_argument("--key", choices=sorted(KEYS), default=DEFAULT_KEY, help="the key to hold while speaking")
     parser.add_argument("--steps", type=int, default=config.DEFAULT_STEPS, help="max actions for each request")
     parser.add_argument("--min-confidence", type=float, default=config.DEFAULT_MIN_CONFIDENCE, help="stop a request below this")
     parser.add_argument("--delay", type=float, default=config.DEFAULT_DELAY, help="seconds to wait after each action")
-    parser.add_argument("--act-confidence", type=float, default=None, help="how sure Jev must be that a request is complete")
-    parser.add_argument(
-        "--ears",
-        choices=["apple", "whisper"],
-        default="apple",
-        help="speech recognizer: macOS's own (default), or a local Whisper model, which needs the voice extras",
-    )
-    parser.add_argument(
-        "--whisper-model", default=None, help="with --ears whisper: the model (default base.en; small.en is more accurate)"
-    )
     parser.add_argument("--out", type=Path, default=Path("runs") / time.strftime("voice-%Y%m%d-%H%M%S"), help="session folder")
     args = parser.parse_args(argv)
 
-    try:
-        from typesafe_sdk import TypeSafeClient
-
-        from . import voice as voice_mode
-        from .apple_speech import EarsError
-        from .calls import CallLog, LoggedTypeSafe
-    except ImportError as e:
-        sys.exit(f"voice mode could not load {e.name}: {e}")
-
     _prepare()
-    if args.act and not macos.accessibility_trusted():
-        sys.exit("this terminal lacks Accessibility permission; grant it in System Settings > Privacy & Security")
+    if not macos.accessibility_trusted():
+        sys.exit("this terminal lacks Accessibility permission, which the key and driving need; grant it in System Settings")
     writer = make_writer()
     if writer is None:
-        print("writer disabled: no OPENROUTER_API_KEY or ANTHROPIC_API_KEY; type_text and the final answers need it")
+        print("writer disabled: no OPENROUTER_API_KEY or ANTHROPIC_API_KEY; type_text and unknown sites need it")
 
     session = voice_mode.Session(out=args.out)
-    if args.act_confidence is not None:
-        session.act_confidence = args.act_confidence
+
+    def partial(text: str) -> None:
+        print(f"{CLEAR_LINE}  ... {text}", end="", flush=True)  # rewritten in place as more is heard
+
+    def utterance(text: str) -> None:
+        print(CLEAR_LINE, end="")
+        session.heard(text)
+
+    ears = AppleEars(on_utterance=utterance, on_partial=partial)
+
+    def down() -> None:
+        ears.hold()
+        print("listening...")
+
+    key = HoldKey(args.key, on_down=down, on_up=ears.release)
 
     def make_config(request: str, out: Path) -> RunConfig:
         return RunConfig(
@@ -174,16 +173,7 @@ def voice(argv: list[str] | None = None) -> None:
             history=history,
         )
 
-    calls = CallLog(args.out / "calls.log")
-    calls.step = "listen"
     try:
-        ears = voice_mode.ears_for(args.ears, session.transcript, args.whisper_model)
-    except ImportError as e:
-        sys.exit(
-            f'--ears whisper needs the voice extras ({e.name} is missing): pip install -r requirements-voice.txt -e ".[voice]"'
-        )
-    with TypeSafeClient(**config.decision_client()) as client:
-        try:
-            voice_mode.start(session, LoggedTypeSafe(client, calls), ctx_factory, make_config, ears)
-        except EarsError as e:  # JevEars could not start, such as a permission refused
-            sys.exit(str(e))
+        voice_mode.start(session, ctx_factory, make_config, ears, key)
+    except (EarsError, PermissionError) as e:  # a permission refused, or no Xcode tools to build JevEars
+        sys.exit(str(e))

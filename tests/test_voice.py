@@ -1,127 +1,46 @@
 import threading
-from types import SimpleNamespace
 
-import numpy as np
-from typesafe_sdk import ChoiceAnswer
-
-from typesafe_computer_use import voice, whisper_speech
+from typesafe_computer_use import voice
 from typesafe_computer_use.runner import RunConfig, RunState
-from typesafe_computer_use.voice import (
-    COMMIT_SILENCE,
-    Heard,
-    Session,
-    Transcript,
-    acting_loop,
-    endpoint_criteria,
-    listen,
-    listen_questions,
-)
-from typesafe_computer_use.whisper_speech import SAMPLE_RATE, Transcriber
-
-WORDS = ["open", "notes", "and", "once", "you're", "there", "create", "a", "new", "note"]
+from typesafe_computer_use.voice import Session, acting_loop, is_cancel, verdict
 
 
-def speech(seconds: float) -> np.ndarray:
-    return np.full(int(seconds * SAMPLE_RATE), 0.2, dtype=np.float32)
+def quiet(_: str) -> None:
+    pass
 
 
-def quiet(seconds: float) -> np.ndarray:
-    return np.zeros(int(seconds * SAMPLE_RATE), dtype=np.float32)
-
-
-def test_endpoints_are_the_pending_speech_up_to_each_word():
-    assert endpoint_criteria(["open", "notes", "and"]) == {"1": "open", "2": "open notes", "3": "open notes and"}
-    assert len(endpoint_criteria(["w"] * 500)) == voice.ENDPOINT_WORDS
-
-
-def test_one_call_asks_whether_to_act_and_where_the_request_ends(tmp_path):
-    seen = {}
-
-    def system_one(state, questions):
-        seen.update(state=state, questions=questions)
-        return SimpleNamespace(
-            answers={
-                "heard": ChoiceAnswer(choice="act_now", confidence=0.9, probabilities={"act_now": 0.9}),
-                "ends_after": ChoiceAnswer(choice="2", confidence=0.8, probabilities={"2": 0.8}),
-            }
-        )
-
-    heard = listen(SimpleNamespace(system_one=system_one), WORDS, 0, [], [], speaking=True)
-    assert heard == Heard(kind="act_now", confidence=0.9, words=2)
-    assert seen["state"]["speech_not_yet_acted_on"] == " ".join(WORDS)
-    assert set(seen["questions"]) == {"heard", "ends_after"}
-    assert set(seen["questions"]["heard"].criteria) == {"act_now", "wait_for_more", "cancel"}
-
-
-def test_questions_offer_only_the_speech_not_yet_acted_on():
-    criteria = listen_questions(WORDS[2:])["ends_after"].criteria
-    assert criteria["1"] == "and"
-
-
-def test_a_request_consumes_its_words_and_queues_them(tmp_path):
+def test_each_utterance_is_one_request(tmp_path):
     session = Session(out=tmp_path)
-    assert session.apply(Heard("act_now", 0.9, 2), WORDS) == "open notes"
-    assert session.consumed == 2
-    assert session.apply(Heard("act_now", 0.9, 8), WORDS) == "and once you're there create a new note"
-    assert session.consumed == len(WORDS)
-    assert [session.pending.get_nowait(), session.pending.get_nowait()] == [
-        "open notes",
-        "and once you're there create a new note",
-    ]
+    session.heard("Open GitHub.", say=quiet)
+    session.heard("Then search for typesafe.", say=quiet)
+    assert [session.pending.get_nowait(), session.pending.get_nowait()] == ["Open GitHub.", "Then search for typesafe."]
 
 
-def test_waiting_or_an_unsure_answer_changes_nothing(tmp_path):
-    session = Session(out=tmp_path, act_confidence=0.7)
-    assert session.apply(Heard("wait_for_more", 0.95, 3), WORDS) is None
-    assert session.apply(Heard("act_now", 0.5, 2), WORDS) is None
-    assert session.consumed == 0 and session.pending.empty()
-
-
-def test_cancel_drops_the_queue_and_what_was_said(tmp_path):
+def test_nothing_heard_queues_nothing(tmp_path):
     session = Session(out=tmp_path)
-    session.apply(Heard("act_now", 0.9, 2), WORDS)
-    session.apply(Heard("cancel", 0.9, 1), WORDS)
+    session.heard("", say=quiet)
+    assert session.pending.empty() and not session.requests
+
+
+def test_a_lone_stop_cancels_and_drops_the_queue(tmp_path):
+    session = Session(out=tmp_path)
+    session.heard("Open GitHub.", say=quiet)
+    session.heard("Stop!", say=quiet)
     assert session.pending.empty() and session.cancel.is_set()
-    assert session.consumed == len(WORDS)
 
 
-def test_the_window_is_reread_while_speaking_and_closed_after_a_pause():
-    passes = []
-
-    def transcribe(samples):
-        passes.append(samples.size)
-        return "open notes"
-
-    transcript = Transcript()
-    t = Transcriber(transcribe, transcript)
-    t.feed(quiet(2.0), now=0.0)
-    t.tick(now=0.0)
-    assert not passes  # quiet alone is never transcribed
-
-    t.feed(speech(0.1), now=2.0)
-    t.tick(now=2.0)
-    assert not passes  # a syllable is too little to read
-    t.feed(speech(0.5), now=2.5)
-    t.tick(now=2.5)
-    assert transcript.snapshot()[0] == ["open", "notes"]  # an open window, still revisable
-    assert passes[0] == int((whisper_speech.IDLE_KEEP + 0.6) * SAMPLE_RATE)  # the lead-in quiet was trimmed
-
-    t.feed(quiet(0.1), now=2.6 + COMMIT_SILENCE)
-    t.tick(now=2.6 + COMMIT_SILENCE)
-    words, _ = transcript.snapshot()
-    assert words == ["open", "notes"]
-    t.feed(speech(0.6), now=5.0)
-    t.tick(now=5.0 + whisper_speech.FIRST_PASS_AFTER)
-    assert transcript.snapshot()[0] == ["open", "notes", "open", "notes"]  # the first window became final
+def test_only_a_bare_cancel_counts():
+    assert is_cancel("Cancel.") and is_cancel("never mind") and is_cancel("Stop that")
+    assert not is_cancel("stop the timer") and not is_cancel("cancel my 3pm meeting")
 
 
-def test_requests_run_in_order_sharing_history_and_the_stop_flag(tmp_path, monkeypatch):
+def test_requests_run_in_order_sharing_history_without_the_final_answer(tmp_path, monkeypatch):
     session = Session(out=tmp_path)
-    runs = []
+    runs, said = [], []
 
     def fake_run(cfg, ctx_factory, history):
         ctx = ctx_factory("typesafe", history)
-        runs.append((cfg.goal, ctx, cfg.stop))
+        runs.append((cfg.goal, ctx, cfg.stop, cfg.answer))
         history.append(f"did {cfg.goal}")
         if len(runs) == 2:
             session.done.set()
@@ -134,11 +53,18 @@ def test_requests_run_in_order_sharing_history_and_the_stop_flag(tmp_path, monke
         session,
         lambda goal, typesafe, history: (goal, len(history)),
         lambda request, out: RunConfig(goal=request, out=out),
-        say=lambda _: None,
+        say=said.append,
     )
-    assert [goal for goal, _, _ in runs] == ["open notes", "create a new note"]
+    assert [goal for goal, *_ in runs] == ["open notes", "create a new note"]
     assert runs[1][1] == ("create a new note", 1)  # the second request saw the first one's action
-    assert all(stop is session.cancel for _, _, stop in runs)
+    assert all(stop is session.cancel and answer is False for _, _, stop, answer in runs)
+    assert any("done: Jev judged the request complete" in line for line in said)
+
+
+def test_verdicts():
+    assert verdict("done").startswith("done")
+    assert verdict("aborted (stopped by request)") == "cancelled"
+    assert verdict("stalled") == "not done: the last actions changed nothing"
 
 
 def run_one(tmp_path, monkeypatch, outcome) -> Session:
@@ -149,7 +75,7 @@ def run_one(tmp_path, monkeypatch, outcome) -> Session:
     worker = threading.Thread(
         target=acting_loop,
         args=(session, lambda *a: None, lambda r, o: RunConfig(goal=r, out=o)),
-        kwargs={"say": lambda _: None},
+        kwargs={"say": quiet},
         daemon=True,
     )
     worker.start()
@@ -165,10 +91,6 @@ def test_a_spoken_cancel_ends_only_the_request(tmp_path, monkeypatch):
     session = run_one(tmp_path, monkeypatch, "aborted (stopped by request)")
     assert not session.done.is_set()
     session.done.set()
-
-
-def test_stray_marks_are_not_words():
-    assert voice.words_of("Open notes. And... // create") == ["Open", "notes.", "And...", "create"]
 
 
 def test_slug():

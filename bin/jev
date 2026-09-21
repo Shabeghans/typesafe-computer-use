@@ -1,11 +1,11 @@
 #!/bin/sh
-# Start voice mode, driving the machine. Ctrl-C ends it.
+# Start voice mode, driving the machine: hold right Option, speak, let go. Ctrl-C ends it.
 # Runs from the repo, so .env is found and the session lands in runs/. Extra arguments pass through.
 repo="$(cd "$(dirname "$0")/.." && pwd -P)"
 cd "$repo" || exit 1
 if [ ! -x venv/bin/clicker-voice ]; then
     echo "jev: no venv in $repo; set it up with:" >&2
-    echo '  python3.12 -m venv venv && venv/bin/pip install -r requirements.txt -r requirements-voice.txt -e ".[voice]"' >&2
+    echo '  python3.12 -m venv venv && venv/bin/pip install -r requirements.txt -e .' >&2
     exit 1
 fi
 exec venv/bin/clicker-voice --act "$@"

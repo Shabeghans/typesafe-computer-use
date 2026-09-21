@@ -2,7 +2,11 @@ import json
 
 from typesafe_computer_use import apple_speech
 from typesafe_computer_use.apple_speech import AppleEars
-from typesafe_computer_use.voice import Transcript
+
+
+def listening() -> tuple[AppleEars, list, list]:
+    utterances, partials = [], []
+    return AppleEars(on_utterance=utterances.append, on_partial=partials.append), utterances, partials
 
 
 def write(ears: AppleEars, *messages: dict, tail: str = "") -> None:
@@ -10,36 +14,46 @@ def write(ears: AppleEars, *messages: dict, tail: str = "") -> None:
         f.write("".join(json.dumps(m) + "\n" for m in messages) + tail)
 
 
-def test_partial_lines_revise_the_window_and_final_lines_commit_it():
-    transcript = Transcript()
-    ears = AppleEars(transcript)
-    write(ears, {"pid": 4321}, {"ready": True, "on_device": True}, {"text": "Open Kit", "final": False})
+def test_partials_show_progress_and_the_final_line_is_the_utterance():
+    ears, utterances, partials = listening()
+    write(ears, {"pid": 4321}, {"ready": True, "on_device": True}, {"text": "Open Git", "final": False})
     ears.poll()
     assert ears._pid == 4321 and ears.on_device
-    assert transcript.snapshot()[0] == ["Open", "Kit"]
+    assert partials == ["Open Git"] and utterances == []
 
-    write(ears, {"text": "Open GitHub.", "final": True}, {"text": "and search", "final": False})
+    write(ears, {"text": "Open GitHub.", "final": True}, {"text": "", "final": True})
     ears.poll()
-    assert transcript.snapshot()[0] == ["Open", "GitHub.", "and", "search"]
-    assert ears.speaking()
+    assert utterances == ["Open GitHub.", ""]
     ears._pid = 0
     ears.close()
 
 
 def test_a_line_still_being_written_waits_for_its_end():
-    transcript = Transcript()
-    ears = AppleEars(transcript)
+    ears, utterances, _ = listening()
     write(ears, tail='{"text": "Open Gi')
     ears.poll()
-    assert transcript.snapshot()[0] == []
-    write(ears, tail='tHub", "final": false}\n')
+    assert utterances == []
+    write(ears, tail='tHub", "final": true}\n')
     ears.poll()
-    assert transcript.snapshot()[0] == ["Open", "GitHub"]
+    assert utterances == ["Open GitHub"]
+    ears.close()
+
+
+def test_hold_and_release_signal_the_helper(monkeypatch):
+    ears, _, _ = listening()
+    sent = []
+    monkeypatch.setattr(apple_speech.os, "kill", lambda pid, number: sent.append((pid, number)))
+    ears.hold()
+    assert sent == []  # no helper yet
+    ears._pid = 99
+    ears.hold()
+    ears.release()
+    assert sent == [(99, apple_speech.signal.SIGUSR1), (99, apple_speech.signal.SIGUSR2)]
     ears.close()
 
 
 def test_an_error_line_is_kept_for_the_caller():
-    ears = AppleEars(Transcript())
+    ears, _, _ = listening()
     write(ears, {"error": "speech recognition is not allowed"})
     ears.poll()
     assert ears._error == "speech recognition is not allowed"
@@ -54,4 +68,3 @@ def test_the_vocabulary_leads_with_sites_and_has_no_repeats(tmp_path, monkeypatc
     words = apple_speech.vocabulary()
     assert words[0] == "GitHub"
     assert len(words) == len(set(words)) <= apple_speech.MAX_WORDS
-    assert "Zed" in words or len(words) == apple_speech.MAX_WORDS

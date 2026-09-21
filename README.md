@@ -99,9 +99,8 @@ an aborted run, print no answer.
 
 ## Voice mode
 
-`clicker-voice` listens to the microphone and starts each spoken request as soon as it is
-complete, while you keep talking: say "open Notes, and once you're there create a new note"
-and Notes opens before you reach "create".
+`clicker-voice` is push to talk: hold right Option, say a request, let go, and it is done. Hold it
+again for the next one, even while the last is still running; requests run in order.
 
 ```
 clicker-voice          # dry run: one step per request, prints what it would do
@@ -109,28 +108,23 @@ clicker-voice --act    # drives the machine
 bin/jev                # the same as clicker-voice --act, from anywhere; alias it as jev
 ```
 
-- macOS's own speech recognition (the engine behind Dictation) transcribes as you speak, on the
-  Mac when it supports that. It is told to expect the installed app names and common sites, so
-  "GitHub" comes through as GitHub. macOS lets only an app that declares it use speech
-  recognition, and a terminal does not, so it runs in a small helper app, JevEars, compiled on
-  first use with the Xcode command line tools into `~/Library/Application Support/typesafe-computer-use/`.
-  The first run asks you to let **JevEars** use the microphone and speech recognition.
-- `--ears whisper` uses a local Whisper model instead (`base.en`, about 150 MB, downloaded on
-  first use; `--whisper-model small.en` is slower and more accurate). It needs the extras,
-  `pip install -r requirements-voice.txt -e ".[voice]"`, and your terminal needs Microphone access.
-- Each time the transcript grows, one Jev call answers two questions about the speech not yet
-  acted on: `act_now`, `wait_for_more` or `cancel`, and after which word the request ends. The
-  endpoints are offered as choices, the speech up to each word, so the split is a pick rather than
-  generated text.
-- Each request goes on a queue, and a worker runs the ordinary step loop on it, one at a time,
-  sharing the action history so "once you're there" follows on.
-- Saying "stop" or "cancel" ends the running request and drops the queue. Ctrl-C or the mouse in
-  the top-left corner ends the session.
-- `--act-confidence` (0.5) is how sure Jev must be that a request is complete. Raise it to act
-  later and split less.
+- The microphone is on only while the key is held. What was said in between is one request, so
+  there is no guessing where a request ends. `--key` picks another key: `right_command` or `fn`.
+- macOS's own speech recognition (the engine behind Dictation) hears it, on the Mac when it
+  supports that. It is told to expect the installed app names and common sites, so "GitHub"
+  comes through as GitHub. macOS lets only an app that declares it use speech recognition, and a
+  terminal does not, so it runs in a small helper app, JevEars, compiled on first use with the
+  Xcode command line tools into `~/Library/Application Support/typesafe-computer-use/`. The first
+  run asks you to let **JevEars** use the microphone and speech recognition.
+- Each request runs the ordinary step loop, sharing the action history, so "now search for
+  typesafe" follows on. It ends without the final answer: no screenshot goes to a model. The
+  output says `done: Jev judged the request complete` when the classifier stopped on `done`, and
+  why it stopped otherwise. The writer (Haiku) still composes the text to type and unknown URLs.
+- Saying only "stop" or "cancel" ends the running request and drops the queue. Ctrl-C or the mouse
+  in the top-left corner ends the session.
 
-The session folder, `runs/voice-<timestamp>/`, holds
-the listening calls in `calls.log` and one run folder per request.
+The key is watched with an event tap, which needs your terminal's **Accessibility** permission,
+as driving does. The session folder, `runs/voice-<timestamp>/`, holds one run folder per request.
 
 ## How a step works
 

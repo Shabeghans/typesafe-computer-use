@@ -3,8 +3,8 @@
 macOS lets a process use speech recognition only if its app declares it, and a Python started from
 a terminal counts as the terminal, which does not. So the recognizer runs in a small Swift app,
 built on first use with the Xcode command line tools and launched with `open`, which makes it its
-own app with its own permissions. It appends what it hears to a file as JSON lines (see
-JevEars/JevEars.swift), and `AppleEars` follows that file into the transcript.
+own app with its own permissions. Signals turn its microphone on and off, and it appends what
+it hears to a file as JSON lines (see JevEars/JevEars.swift), which `AppleEars` follows.
 """
 
 from __future__ import annotations
@@ -19,9 +19,8 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-
-from .voice import COMMIT_SILENCE, Transcript, words_of
 
 SOURCE = Path(__file__).parent / "JevEars"
 APP = Path.home() / "Library" / "Application Support" / "typesafe-computer-use" / "JevEars.app"
@@ -86,11 +85,13 @@ def build(app: Path = APP) -> Path:
 
 
 class AppleEars:
-    """Runs JevEars and feeds what it hears into the transcript."""
+    """Runs JevEars. `hold()` turns its microphone on and `release()` off; each utterance heard in
+    between goes to `on_utterance(text)` once the recognizer is done, and `on_partial(text)` gets it
+    as it is heard."""
 
-    def __init__(self, transcript: Transcript):
-        self.transcript = transcript
-        self.last_heard = 0.0
+    def __init__(self, on_utterance: Callable[[str], None], on_partial: Callable[[str], None] = lambda text: None):
+        self.on_utterance = on_utterance
+        self.on_partial = on_partial
         self.on_device = False
         self._pid = 0
         self._folder = Path(tempfile.mkdtemp(prefix="jev-ears-"))
@@ -105,7 +106,7 @@ class AppleEars:
         app = build()
         words = self._folder / "words.txt"
         words.write_text("\n".join(vocabulary()))
-        args = ["--out", str(self._log), "--parent", str(os.getpid()), "--silence", str(COMMIT_SILENCE), "--words", str(words)]
+        args = ["--out", str(self._log), "--parent", str(os.getpid()), "--words", str(words)]
         # -n: a fresh instance; -g: in the background, so the app being driven keeps the focus.
         subprocess.run(["open", "-n", "-g", str(app), "--args", *args], check=True)
         started = time.monotonic()
@@ -119,8 +120,19 @@ class AppleEars:
                 print("allow JevEars to use the microphone and speech recognition if macOS asks...")
                 hinted = True
             if waited > READY_TIMEOUT:
-                raise EarsError(f"JevEars did not start listening; its output is in {self._log}")
+                raise EarsError(f"JevEars did not start; its output is in {self._log}")
             time.sleep(0.05)
+
+    def hold(self) -> None:
+        self._signal(signal.SIGUSR1)
+
+    def release(self) -> None:
+        self._signal(signal.SIGUSR2)
+
+    def _signal(self, number: int) -> None:
+        if self._pid:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(self._pid, number)
 
     def poll(self) -> None:
         """Read whatever JevEars has written since the last poll."""
@@ -143,12 +155,11 @@ class AppleEars:
         elif "error" in message:
             self._error = str(message["error"])
         elif "text" in message:
-            self.last_heard = time.monotonic()
-            words = words_of(message["text"])
+            text = str(message["text"]).strip()
             if message.get("final"):
-                self.transcript.commit(words)
+                self.on_utterance(text)
             else:
-                self.transcript.set_window(words)
+                self.on_partial(text)
 
     def run(self, done: threading.Event) -> None:
         while not done.is_set():
@@ -158,14 +169,9 @@ class AppleEars:
                 done.set()
             time.sleep(0.05)
 
-    def speaking(self) -> bool:
-        return time.monotonic() - self.last_heard < COMMIT_SILENCE
-
     def describe(self) -> str:
         return "macOS speech recognition" + (" (on this Mac)" if self.on_device else " (Apple's servers)")
 
     def close(self) -> None:
-        if self._pid:
-            with contextlib.suppress(ProcessLookupError):
-                os.kill(self._pid, signal.SIGTERM)
+        self._signal(signal.SIGTERM)
         shutil.rmtree(self._folder, ignore_errors=True)

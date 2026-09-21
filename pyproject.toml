@@ -29,7 +29,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest==9.1.1", "ruff==0.16.8"]
-voice = ["faster-whisper==1.2.1", "sounddevice==0.5.6"]
 
 [project.urls]
 Homepage = "https://github.com/awlevin/typesafe-computer-use"

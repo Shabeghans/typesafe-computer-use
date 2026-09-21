@@ -47,6 +47,7 @@ class RunConfig:
     app: str | None = None  # frontmost app to report during replay
     url: str | None = None  # browser URL to report during replay
     stop: threading.Event | None = None  # set from another thread to end the run at the next step, as an abort
+    answer: bool = True  # hand the last screen to the answer model when the run stops itself
 
     @property
     def replay(self) -> bool:
@@ -120,7 +121,7 @@ def conclude(cfg: RunConfig, ctx: Context, state: RunState, log: Log) -> None:
     screen is captured again, and saved so the answer can be checked against what it was read from.
     """
     stopped = STOPPED.get(state.outcome)
-    if stopped is None:
+    if stopped is None or not cfg.answer:
         return
     if ctx.writer is None:
         log("\nno answer: the writer is disabled (set OPENROUTER_API_KEY or ANTHROPIC_API_KEY)")

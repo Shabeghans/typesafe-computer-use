@@ -88,6 +88,16 @@ def test_a_run_that_has_nothing_to_report_asks_for_no_answer(outcome, tmp_path, 
     assert state.answer is None and not fake.requests and not lines
 
 
+def test_a_run_told_not_to_answer_asks_for_no_answer(tmp_path, screen):
+    fake = FakeWriter({"achieved": True, "answer": "unused"})
+    state = RunState(outcome="done", view=(screen, []))
+    lines, log = logged()
+
+    conclude(RunConfig(goal=GOAL, out=tmp_path, answer=False), context(fake), state, log)
+
+    assert state.answer is None and not fake.requests and not lines
+
+
 def test_without_a_writer_the_run_says_why_there_is_no_answer(tmp_path, screen):
     state = RunState(outcome="done", view=(screen, []))
     lines, log = logged()
