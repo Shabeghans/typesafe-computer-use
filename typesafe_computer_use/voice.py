@@ -1,18 +1,18 @@
 """Voice mode: act on spoken requests while the user is still talking.
 
-The microphone feeds a local Whisper model, which keeps a transcript. Every time the transcript
-grows, one Jev call asks whether the speech not yet acted on already holds a complete request,
-and after which word it ends. Each request found goes on a queue, and a worker thread runs the
-ordinary step loop on it while listening carries on. Everything said so far is never re-acted on:
-a count of consumed words moves past each request.
+A speech recognizer keeps a transcript: macOS's own, through the JevEars helper app
+(apple_speech.py), or a local Whisper model (whisper_speech.py). Every time the transcript grows,
+one Jev call asks whether the speech not yet acted on already holds a complete request, and after
+which word it ends. Each request found goes on a queue, and a worker thread runs the ordinary step
+loop on it while listening carries on. Everything said so far is never re-acted on: a count of
+consumed words moves past each request.
 
-Whisper and the audio library are imported only when voice mode starts, so the base install
-does without them.
+Whisper and the audio library are imported only when that recognizer is chosen, so the base
+install does without them.
 """
 
 from __future__ import annotations
 
-import contextlib
 import queue
 import re
 import threading
@@ -21,23 +21,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import numpy as np
 from typesafe_sdk import Choice
 
 from .runner import RunConfig, run
 
-SAMPLE_RATE = 16_000  # what Whisper reads
-BLOCK_SECONDS = 0.1  # one microphone callback
-TRANSCRIBE_EVERY = 0.7  # seconds between passes over the open window
-SILENCE_RMS = 0.01  # a block quieter than this is not speech
 COMMIT_SILENCE = 0.9  # this much quiet closes the window, and its words become final
-MAX_WINDOW = 20.0  # a window never grows past this, so a pass stays quick
-IDLE_KEEP = 0.5  # seconds of quiet kept before speech starts, so its first syllable is not cut
-FIRST_PASS_AFTER = 0.5  # seconds of speech before the first pass: Whisper invents words from a syllable
 DEBOUNCE = 0.25  # after the transcript changes, wait this long for the next word before deciding
 ENDPOINT_WORDS = 60  # most words offered as where a request ends; far under the Choice ceiling
 DEFAULT_ACT_CONFIDENCE = 0.5  # acting early is cheap: the loop checks the screen before each step
-DEFAULT_WHISPER_MODEL = "base.en"
 
 HEARD = {
     "act_now": (
@@ -58,7 +49,7 @@ HEARD = {
 
 
 class Transcript:
-    """Words heard so far: the final ones, plus the open window Whisper may still revise. Thread safe."""
+    """Words heard so far: the final ones, plus the open window the recognizer may still revise. Thread safe."""
 
     def __init__(self) -> None:
         self._final: list[str] = []
@@ -86,57 +77,8 @@ class Transcript:
 
 
 def words_of(text: str) -> list[str]:
-    """The words of a transcription, without the stray marks Whisper emits, such as '//' or '...'."""
+    """The words of a transcription, without stray marks such as '//' or '...'."""
     return [word for word in text.split() if any(ch.isalnum() for ch in word)]
-
-
-class Transcriber:
-    """Turns audio blocks into transcript updates. `transcribe(samples) -> text` is the model."""
-
-    def __init__(self, transcribe: Callable[[np.ndarray], str], transcript: Transcript):
-        self._transcribe = transcribe
-        self.transcript = transcript
-        self._window = np.zeros(0, dtype=np.float32)
-        self._voiced = False  # the window holds speech, not just the lead-in quiet
-        self.last_voice = 0.0
-        self._next_pass = 0.0
-
-    def feed(self, samples: np.ndarray, now: float) -> None:
-        samples = np.asarray(samples, dtype=np.float32).reshape(-1)
-        if samples.size and float(np.sqrt(np.mean(samples**2))) >= SILENCE_RMS:
-            if not self._voiced:
-                self._next_pass = now + FIRST_PASS_AFTER
-            self._voiced = True
-            self.last_voice = now
-        self._window = np.concatenate([self._window, samples])
-        if not self._voiced:
-            self._window = self._window[-int(IDLE_KEEP * SAMPLE_RATE) :]
-
-    def tick(self, now: float) -> None:
-        """Re-read the open window when due, and close it after a pause or when it gets long."""
-        if not self._voiced:
-            return
-        seconds = self._window.size / SAMPLE_RATE
-        if now - self.last_voice >= COMMIT_SILENCE or seconds >= MAX_WINDOW:
-            self.transcript.commit(words_of(self._transcribe(self._window)))
-            self._window = np.zeros(0, dtype=np.float32)
-            self._voiced = False
-        elif now >= self._next_pass:
-            self.transcript.set_window(words_of(self._transcribe(self._window)))
-            self._next_pass = now + TRANSCRIBE_EVERY
-
-
-def whisper(model_name: str) -> Callable[[np.ndarray], str]:
-    """A local Whisper model as `samples -> text`. The first use downloads the model."""
-    from faster_whisper import WhisperModel
-
-    model = WhisperModel(model_name, device="cpu", compute_type="int8")
-
-    def transcribe(samples: np.ndarray) -> str:
-        segments, _ = model.transcribe(samples, language="en", beam_size=1, vad_filter=True, condition_on_previous_text=False)
-        return " ".join(segment.text.strip() for segment in segments).strip()
-
-    return transcribe
 
 
 # ------------------------------------------------------------------ the listening decision
@@ -281,45 +223,35 @@ def acting_loop(session: Session, ctx_factory, make_config: Callable[[str, Path]
             session.done.set()
 
 
-def start(
-    session: Session,
-    client,
-    ctx_factory,
-    make_config: Callable[[str, Path], RunConfig],
-    whisper_model: str = DEFAULT_WHISPER_MODEL,
-) -> None:
-    """Open the microphone and run until Ctrl-C or the mouse-corner abort."""
-    import sounddevice as sd
+def ears_for(name: str, transcript: Transcript, whisper_model: str | None = None):
+    """The speech recognizer: "apple" (macOS's own) or "whisper" (a local model)."""
+    if name == "apple":
+        from .apple_speech import AppleEars
 
+        return AppleEars(transcript)
+    from .whisper_speech import DEFAULT_MODEL, WhisperEars
+
+    return WhisperEars(transcript, whisper_model or DEFAULT_MODEL)
+
+
+def start(session: Session, client, ctx_factory, make_config: Callable[[str, Path], RunConfig], ears) -> None:
+    """Listen until Ctrl-C or the mouse-corner abort.
+
+    `ears` has start(), run(done) to feed the transcript, speaking(), describe(), and close().
+    """
     session.out.mkdir(parents=True, exist_ok=True)
-    print(f"loading the {whisper_model} speech model (downloaded on first use)...")
-    transcriber = Transcriber(whisper(whisper_model), session.transcript)
-    blocks: queue.Queue = queue.Queue()
-
-    def on_audio(indata, frames, when, status) -> None:
-        blocks.put(indata[:, 0].copy())
-
-    def transcribing() -> None:
-        while not session.done.is_set():
-            with contextlib.suppress(queue.Empty):
-                transcriber.feed(blocks.get(timeout=0.1), time.monotonic())
-            transcriber.tick(time.monotonic())
-
-    def speaking() -> bool:
-        return time.monotonic() - transcriber.last_voice < COMMIT_SILENCE
-
-    threads = [
-        threading.Thread(target=transcribing, name="transcribe", daemon=True),
-        threading.Thread(target=listening_loop, args=(session, client, speaking), name="listen", daemon=True),
-        threading.Thread(target=acting_loop, args=(session, ctx_factory, make_config), name="act", daemon=True),
-    ]
-    stream = sd.InputStream(
-        samplerate=SAMPLE_RATE, channels=1, dtype="float32", blocksize=int(BLOCK_SECONDS * SAMPLE_RATE), callback=on_audio
-    )
-    with stream:
+    try:
+        ears.start()
+        threads = [
+            threading.Thread(target=ears.run, args=(session.done,), name="hear", daemon=True),
+            threading.Thread(target=listening_loop, args=(session, client, ears.speaking), name="listen", daemon=True),
+            threading.Thread(target=acting_loop, args=(session, ctx_factory, make_config), name="act", daemon=True),
+        ]
         for thread in threads:
             thread.start()
-        print("listening. speak your requests; Ctrl-C or the mouse in the top-left corner ends the session.")
+        print(
+            f"listening with {ears.describe()}. speak your requests; Ctrl-C or the mouse in the top-left corner ends the session."
+        )
         try:
             while not session.done.is_set():
                 time.sleep(0.2)
@@ -328,6 +260,8 @@ def start(
         finally:
             session.cancel.set()
             session.done.set()
-    for thread in threads:
-        thread.join(timeout=5)
+        for thread in threads:
+            thread.join(timeout=5)
+    finally:
+        ears.close()
     print(f"session folder: {session.out}")

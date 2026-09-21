@@ -127,7 +127,15 @@ def voice(argv: list[str] | None = None) -> None:
     parser.add_argument("--min-confidence", type=float, default=config.DEFAULT_MIN_CONFIDENCE, help="stop a request below this")
     parser.add_argument("--delay", type=float, default=config.DEFAULT_DELAY, help="seconds to wait after each action")
     parser.add_argument("--act-confidence", type=float, default=None, help="how sure Jev must be that a request is complete")
-    parser.add_argument("--whisper-model", default=None, help="local speech model (default base.en; small.en is more accurate)")
+    parser.add_argument(
+        "--ears",
+        choices=["apple", "whisper"],
+        default="apple",
+        help="speech recognizer: macOS's own (default), or a local Whisper model, which needs the voice extras",
+    )
+    parser.add_argument(
+        "--whisper-model", default=None, help="with --ears whisper: the model (default base.en; small.en is more accurate)"
+    )
     parser.add_argument("--out", type=Path, default=Path("runs") / time.strftime("voice-%Y%m%d-%H%M%S"), help="session folder")
     args = parser.parse_args(argv)
 
@@ -135,9 +143,10 @@ def voice(argv: list[str] | None = None) -> None:
         from typesafe_sdk import TypeSafeClient
 
         from . import voice as voice_mode
+        from .apple_speech import EarsError
         from .calls import CallLog, LoggedTypeSafe
     except ImportError as e:
-        sys.exit(f'voice mode needs its extras ({e.name} is missing): pip install -r requirements-voice.txt -e ".[voice]"')
+        sys.exit(f"voice mode could not load {e.name}: {e}")
 
     _prepare()
     if args.act and not macos.accessibility_trusted():
@@ -167,11 +176,14 @@ def voice(argv: list[str] | None = None) -> None:
 
     calls = CallLog(args.out / "calls.log")
     calls.step = "listen"
-    with TypeSafeClient(**config.decision_client()) as client:
-        voice_mode.start(
-            session,
-            LoggedTypeSafe(client, calls),
-            ctx_factory,
-            make_config,
-            args.whisper_model or voice_mode.DEFAULT_WHISPER_MODEL,
+    try:
+        ears = voice_mode.ears_for(args.ears, session.transcript, args.whisper_model)
+    except ImportError as e:
+        sys.exit(
+            f'--ears whisper needs the voice extras ({e.name} is missing): pip install -r requirements-voice.txt -e ".[voice]"'
         )
+    with TypeSafeClient(**config.decision_client()) as client:
+        try:
+            voice_mode.start(session, LoggedTypeSafe(client, calls), ctx_factory, make_config, ears)
+        except EarsError as e:  # JevEars could not start, such as a permission refused
+            sys.exit(str(e))

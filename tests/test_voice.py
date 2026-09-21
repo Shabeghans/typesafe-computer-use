@@ -4,20 +4,19 @@ from types import SimpleNamespace
 import numpy as np
 from typesafe_sdk import ChoiceAnswer
 
-from typesafe_computer_use import voice
+from typesafe_computer_use import voice, whisper_speech
 from typesafe_computer_use.runner import RunConfig, RunState
 from typesafe_computer_use.voice import (
     COMMIT_SILENCE,
-    SAMPLE_RATE,
     Heard,
     Session,
-    Transcriber,
     Transcript,
     acting_loop,
     endpoint_criteria,
     listen,
     listen_questions,
 )
+from typesafe_computer_use.whisper_speech import SAMPLE_RATE, Transcriber
 
 WORDS = ["open", "notes", "and", "once", "you're", "there", "create", "a", "new", "note"]
 
@@ -105,14 +104,14 @@ def test_the_window_is_reread_while_speaking_and_closed_after_a_pause():
     t.feed(speech(0.5), now=2.5)
     t.tick(now=2.5)
     assert transcript.snapshot()[0] == ["open", "notes"]  # an open window, still revisable
-    assert passes[0] == int((voice.IDLE_KEEP + 0.6) * SAMPLE_RATE)  # the lead-in quiet was trimmed
+    assert passes[0] == int((whisper_speech.IDLE_KEEP + 0.6) * SAMPLE_RATE)  # the lead-in quiet was trimmed
 
     t.feed(quiet(0.1), now=2.6 + COMMIT_SILENCE)
     t.tick(now=2.6 + COMMIT_SILENCE)
     words, _ = transcript.snapshot()
     assert words == ["open", "notes"]
     t.feed(speech(0.6), now=5.0)
-    t.tick(now=5.0 + voice.FIRST_PASS_AFTER)
+    t.tick(now=5.0 + whisper_speech.FIRST_PASS_AFTER)
     assert transcript.snapshot()[0] == ["open", "notes", "open", "notes"]  # the first window became final
 
 

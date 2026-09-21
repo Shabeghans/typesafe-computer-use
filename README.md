@@ -104,13 +104,20 @@ complete, while you keep talking: say "open Notes, and once you're there create 
 and Notes opens before you reach "create".
 
 ```
-pip install -r requirements.txt -r requirements-voice.txt -e ".[voice]"   # once
 clicker-voice          # dry run: one step per request, prints what it would do
 clicker-voice --act    # drives the machine
+bin/jev                # the same as clicker-voice --act, from anywhere; alias it as jev
 ```
 
-- A local Whisper model (`base.en`, about 150 MB, downloaded on first use) transcribes as you
-  speak. Audio never leaves the Mac. `--whisper-model small.en` is slower and more accurate.
+- macOS's own speech recognition (the engine behind Dictation) transcribes as you speak, on the
+  Mac when it supports that. It is told to expect the installed app names and common sites, so
+  "GitHub" comes through as GitHub. macOS lets only an app that declares it use speech
+  recognition, and a terminal does not, so it runs in a small helper app, JevEars, compiled on
+  first use with the Xcode command line tools into `~/Library/Application Support/typesafe-computer-use/`.
+  The first run asks you to let **JevEars** use the microphone and speech recognition.
+- `--ears whisper` uses a local Whisper model instead (`base.en`, about 150 MB, downloaded on
+  first use; `--whisper-model small.en` is slower and more accurate). It needs the extras,
+  `pip install -r requirements-voice.txt -e ".[voice]"`, and your terminal needs Microphone access.
 - Each time the transcript grows, one Jev call answers two questions about the speech not yet
   acted on: `act_now`, `wait_for_more` or `cancel`, and after which word the request ends. The
   endpoints are offered as choices, the speech up to each word, so the split is a pick rather than
@@ -122,7 +129,7 @@ clicker-voice --act    # drives the machine
 - `--act-confidence` (0.5) is how sure Jev must be that a request is complete. Raise it to act
   later and split less.
 
-Grant your terminal **Microphone** access too. The session folder, `runs/voice-<timestamp>/`, holds
+The session folder, `runs/voice-<timestamp>/`, holds
 the listening calls in `calls.log` and one run folder per request.
 
 ## How a step works
