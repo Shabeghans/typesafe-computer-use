@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 
 import anthropic
@@ -45,6 +46,7 @@ class RunConfig:
     image: Path | None = None  # replay a saved capture (never acts)
     app: str | None = None  # frontmost app to report during replay
     url: str | None = None  # browser URL to report during replay
+    stop: threading.Event | None = None  # set from another thread to end the run at the next step, as an abort
 
     @property
     def replay(self) -> bool:
@@ -64,15 +66,18 @@ class RunState:
     calls: CallLog | None = None  # every model call, written to calls.log in the run folder
 
 
-def run(cfg: RunConfig, ctx_factory) -> RunState:
-    """Drive the loop. ctx_factory(typesafe, history) builds the action Context."""
+def run(cfg: RunConfig, ctx_factory, history: list[str] | None = None) -> RunState:
+    """Drive the loop. ctx_factory(typesafe, history) builds the action Context.
+
+    Pass `history` to continue from earlier runs: it is extended in place, so the next run sees this one's actions.
+    """
     cfg.out.mkdir(parents=True, exist_ok=True)
     log = Log(cfg.out / "run.log")
     log(f"run folder: {cfg.out}")
     if cfg.act:
         log("driving the machine. abort: Ctrl-C, or slam the mouse into the top-left corner.")
 
-    state = RunState(calls=CallLog(cfg.out / "calls.log"))
+    state = RunState(history=[] if history is None else history, calls=CallLog(cfg.out / "calls.log"))
     started = time.time()
     try:
         with TypeSafeClient(**decision_client()) as typesafe:
@@ -100,7 +105,7 @@ def run(cfg: RunConfig, ctx_factory) -> RunState:
             "seconds": round(time.time() - started, 1),
             "timing": summarize(state.timings),
             "history": state.history,
-            "config": {k: str(v) for k, v in asdict(cfg).items()},
+            "config": {f.name: str(getattr(cfg, f.name)) for f in fields(cfg) if f.name != "stop"},
         }
         (cfg.out / "run.json").write_text(json.dumps(summary, indent=2))
         log(f"model calls: {state.calls.count}, logged in {state.calls.path}")
@@ -140,6 +145,8 @@ def conclude(cfg: RunConfig, ctx: Context, state: RunState, log: Log) -> None:
 
 def run_step(cfg: RunConfig, ctx: Context, state: RunState, step: int, log: Log) -> bool:
     macos.check_abort()
+    if cfg.stop is not None and cfg.stop.is_set():
+        raise Abort("stopped by request")
     if state.calls is not None:
         state.calls.step = str(step)
     timing: dict[str, float] = {}

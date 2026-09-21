@@ -97,6 +97,34 @@ and prints the result: the information the goal asked for, or where things stand
 the next step when the screen does not hold it. A dry run that would have acted, and
 an aborted run, print no answer.
 
+## Voice mode
+
+`clicker-voice` listens to the microphone and starts each spoken request as soon as it is
+complete, while you keep talking: say "open Notes, and once you're there create a new note"
+and Notes opens before you reach "create".
+
+```
+pip install -r requirements.txt -r requirements-voice.txt -e ".[voice]"   # once
+clicker-voice          # dry run: one step per request, prints what it would do
+clicker-voice --act    # drives the machine
+```
+
+- A local Whisper model (`base.en`, about 150 MB, downloaded on first use) transcribes as you
+  speak. Audio never leaves the Mac. `--whisper-model small.en` is slower and more accurate.
+- Each time the transcript grows, one Jev call answers two questions about the speech not yet
+  acted on: `act_now`, `wait_for_more` or `cancel`, and after which word the request ends. The
+  endpoints are offered as choices, the speech up to each word, so the split is a pick rather than
+  generated text.
+- Each request goes on a queue, and a worker runs the ordinary step loop on it, one at a time,
+  sharing the action history so "once you're there" follows on.
+- Saying "stop" or "cancel" ends the running request and drops the queue. Ctrl-C or the mouse in
+  the top-left corner ends the session.
+- `--act-confidence` (0.5) is how sure Jev must be that a request is complete. Raise it to act
+  later and split less.
+
+Grant your terminal **Microphone** access too. The session folder, `runs/voice-<timestamp>/`, holds
+the listening calls in `calls.log` and one run folder per request.
+
 ## How a step works
 
 ```

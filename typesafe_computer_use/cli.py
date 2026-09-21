@@ -115,3 +115,63 @@ def inspect(argv: list[str] | None = None) -> None:
     if not args.no_open:
         subprocess.run(["open", str(annotated)], check=False)
         subprocess.run(["open", "-t", str(text)], check=False)
+
+
+def voice(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        prog="clicker-voice",
+        description="Listen to the microphone and act on each spoken request as soon as it is complete.",
+    )
+    parser.add_argument("--act", action="store_true", help="actually click and type (default: one dry-run step per request)")
+    parser.add_argument("--steps", type=int, default=config.DEFAULT_STEPS, help="max actions for each request")
+    parser.add_argument("--min-confidence", type=float, default=config.DEFAULT_MIN_CONFIDENCE, help="stop a request below this")
+    parser.add_argument("--delay", type=float, default=config.DEFAULT_DELAY, help="seconds to wait after each action")
+    parser.add_argument("--act-confidence", type=float, default=None, help="how sure Jev must be that a request is complete")
+    parser.add_argument("--whisper-model", default=None, help="local speech model (default base.en; small.en is more accurate)")
+    parser.add_argument("--out", type=Path, default=Path("runs") / time.strftime("voice-%Y%m%d-%H%M%S"), help="session folder")
+    args = parser.parse_args(argv)
+
+    try:
+        from typesafe_sdk import TypeSafeClient
+
+        from . import voice as voice_mode
+        from .calls import CallLog, LoggedTypeSafe
+    except ImportError as e:
+        sys.exit(f'voice mode needs its extras ({e.name} is missing): pip install -r requirements-voice.txt -e ".[voice]"')
+
+    _prepare()
+    if args.act and not macos.accessibility_trusted():
+        sys.exit("this terminal lacks Accessibility permission; grant it in System Settings > Privacy & Security")
+    writer = make_writer()
+    if writer is None:
+        print("writer disabled: no OPENROUTER_API_KEY or ANTHROPIC_API_KEY; type_text and the final answers need it")
+
+    session = voice_mode.Session(out=args.out)
+    if args.act_confidence is not None:
+        session.act_confidence = args.act_confidence
+
+    def make_config(request: str, out: Path) -> RunConfig:
+        return RunConfig(
+            goal=request, out=out, act=args.act, steps=args.steps, min_confidence=args.min_confidence, delay=args.delay
+        )
+
+    def ctx_factory(goal, typesafe, history):
+        return Context(
+            goal=goal,
+            browser=config.browser(),
+            email=config.email(),
+            typesafe=typesafe,
+            writer=writer,
+            history=history,
+        )
+
+    calls = CallLog(args.out / "calls.log")
+    calls.step = "listen"
+    with TypeSafeClient(**config.decision_client()) as client:
+        voice_mode.start(
+            session,
+            LoggedTypeSafe(client, calls),
+            ctx_factory,
+            make_config,
+            args.whisper_model or voice_mode.DEFAULT_WHISPER_MODEL,
+        )
